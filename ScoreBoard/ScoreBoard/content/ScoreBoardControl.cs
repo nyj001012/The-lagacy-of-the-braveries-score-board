@@ -4,6 +4,7 @@ using ScoreBoard.data.character;
 using ScoreBoard.data.monster;
 using ScoreBoard.data.stat;
 using ScoreBoard.data.statusEffect;
+using ScoreBoard.modals;
 using ScoreBoard.Properties;
 using ScoreBoard.utils;
 using System;
@@ -30,12 +31,23 @@ namespace ScoreBoard.content
         private CorpsMember? currentShowingPlayer = null; // 현재 표시 중인 플레이어
         private const int ICON_SIZE = 45; // 아이콘 크기 설정
         private int currentTurn = 1; // 현재 턴, 초기값은 1로 설정
+        private readonly TransparentTextLabel cachedStatusEffectDefault = new()
+        {
+            Text = "양호",
+            Font = new Font("Danjo-bold", 26),
+            ForeColor = Color.WhiteSmoke,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 0),
+            Cursor = Cursors.Hand
+        };
 
         public ScoreBoardControl(Dictionary<string, CorpsMember> characters, List<(string id, string name, ushort count)> monsters)
         {
             _characters = characters ?? throw new ArgumentNullException(nameof(characters), "캐릭터는 비어있을 수 없습니다.");
             _monsters = monsters ?? throw new ArgumentNullException(nameof(monsters), "몬스터를 선택해야 합니다.");
             InitializeComponent();
+
+            cachedStatusEffectDefault.Click += (s, e) => EditStatusEffect(); // 상태 이상 편집 이벤트 핸들러 등록
         }
 
         private void ScoreBoardControl_Load(object sender, EventArgs e)
@@ -95,6 +107,7 @@ namespace ScoreBoard.content
 
                 panel.Name = $"pn{character.Id}";
                 panel.Click += (s, e) => ShowDetail(character);
+                panel.Tag = index; // 패널에 인덱스 저장
 
                 playerList.Controls.Add(panel);
                 index++;
@@ -242,21 +255,19 @@ namespace ScoreBoard.content
          */
         private void ShowStatusEffect(CorpsMember player)
         {
+            fpnStatusDetail.Visible = true;
+            fpnStatusEffect.Controls.Clear();
             if (player.Stat.StatusEffects.Count == 0)
             {
-                fpnStatusDetail.Controls.Clear();
-                fpnStatusDetail.Visible = false;
+                fpnStatusEffect.Controls.Add(cachedStatusEffectDefault);
                 return;
             }
-
-            fpnStatusDetail.Visible = true;
-            fpnStatusDetail.Controls.Clear();
 
             foreach (var statusEffect in player.Stat.StatusEffects)
             {
                 var (pb, label) = CreateStatusEffectControl(statusEffect);
-                fpnStatusDetail.Controls.Add(pb);
-                fpnStatusDetail.Controls.Add(label);
+                fpnStatusEffect.Controls.Add(pb);
+                fpnStatusEffect.Controls.Add(label);
             }
         }
 
@@ -267,10 +278,12 @@ namespace ScoreBoard.content
          */
         private void ShowHealth(CorpsMember player)
         {
-            lblHealth.Text = player.Stat.Hp.ToString();
+            lblCurrentHealth.Text = player.Stat.Hp.ToString();
             if (player.Stat.Shield > 0)
-                lblHealth.Text += $"(+{player.Stat.Shield})";
-            lblHealth.Text += $"/{player.Stat.MaxHp}";
+            {
+                lblCurrentHealth.Text += $"(+{player.Stat.Shield})";
+            }
+            lblMaxHealth.Text = $"{player.Stat.MaxHp}";
         }
 
         /*
@@ -292,7 +305,107 @@ namespace ScoreBoard.content
             }
         }
 
-        private void pbDice_Click(object sender, EventArgs e) { }
+        /*
+         * pbDice_Click(object sender, EventArgs e)
+         * - 주사위 아이콘 클릭 이벤트 핸들러
+         * - 주사위 값을 편집할 수 있는 모달을 표시
+         */
+        private void pbDice_Click(object sender, EventArgs e)
+        {
+            if (currentShowingPlayer == null)
+                return;
+            string diceValues = ""; // 초기화
+            if (currentShowingPlayer.RequiredDiceValues.Count > 0)
+            {
+                diceValues = string.Join(", ", currentShowingPlayer.RequiredDiceValues
+                .Select(dv => (dv.Value ? "*" : "") + dv.Key));
+            }
+
+            Point point = pbDice.PointToScreen(Point.Empty);
+            point.X += pbDice.Width + pbDice.Margin.Right; // 오른쪽으로 위치 조정
+
+            var editModal = new DetailEditModal(diceValues)
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = point,
+            };
+
+            if (editModal.ShowDialog() == DialogResult.OK)
+            {
+                HandleDiceInput(editModal.InputText);
+            }
+        }
+
+        /*
+         * HandleDiceInput(string inputText)
+         * - 주사위 값을 입력받아 처리하는 메서드
+         * - inputText: 입력된 주사위 값 문자열
+         */
+        private void HandleDiceInput(string inputText)
+        {
+            Dictionary<ushort, bool> newDiceDict = ParseDiceString(inputText);
+
+            if (newDiceDict.Count == 0)
+            {
+                MessageBox.Show("유효한 주사위 값을 입력하세요.", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            currentShowingPlayer!.RequiredDiceValues = newDiceDict;
+            UpdateDiceUI(newDiceDict);
+        }
+
+        /*
+         * UpdateDiceUI(Dictionary<ushort, bool> diceDict)
+         * - 주사위 값을 UI에 업데이트하는 메서드
+         * - diceDict: 주사위 값과 크리티컬 여부를 담은 딕셔너리
+         */
+        private void UpdateDiceUI(Dictionary<ushort, bool> diceDict)
+        {
+            fpnDice.Controls.Clear();
+
+            foreach (var diceValue in diceDict)
+            {
+                var label = CreateDiceLabel(diceValue.Key, diceValue.Value);
+                fpnDice.Controls.Add(label);
+            }
+        }
+
+        /*
+         * ParseDiceString(string input)
+         * - 입력 문자열을 파싱하여 주사위 값을 딕셔너리로 변환하는 메서드
+         * - input: 주사위 값 문자열 (예: "1, 2, *3, 4"). *이 붙은 값은 크리티컬로 간주
+         * - 반환값: 주사위 값과 크리티컬 여부를 담은 딕셔너리
+         */
+        private Dictionary<ushort, bool> ParseDiceString(string input)
+        {
+            Dictionary<ushort, bool> diceValues = [];
+
+            // 입력 문자열을 쉼표로 분리하여 각 주사위 값을 처리
+            string[] parts = input.Split([','], StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (string part in parts)
+            {
+                string trimmedPart = part.Trim();
+                if (trimmedPart.Length == 0) continue; // 빈 문자열은 무시
+                bool isCritical = trimmedPart.StartsWith('*'); // 단일 문자 '*'로 확인
+                ushort value;
+                if (isCritical)
+                {
+                    trimmedPart = trimmedPart.Substring(1).Trim(); // 크리티컬 표시 제거
+                }
+                // 주사위 값이 1~6의 숫자인지 확인
+                if (ushort.TryParse(trimmedPart, out value) && 1 <= value && value <= 6)
+                {
+                    diceValues[value] = isCritical; // 주사위 값과 크리티컬 여부 저장
+                }
+                else
+                {
+                    return []; // 잘못된 입력은 빈 딕셔너리 반환
+                }
+            }
+            return diceValues;
+        }
 
         private void pbSkill_Click(object sender, EventArgs e)
         {
@@ -378,13 +491,18 @@ namespace ScoreBoard.content
         {
             if (monster.Stat.StatusEffects.Count == 0 || !isReported)
             {
-                fpnStatusDetail.Controls.Clear();
                 fpnStatusDetail.Visible = false;
                 return;
             }
 
             fpnStatusDetail.Visible = true;
-            fpnStatusDetail.Controls.Clear();
+            fpnStatusEffect.Controls.Clear();
+
+            if (monster.Stat.StatusEffects.Count == 0)
+            {
+                fpnStatusDetail.Controls.Add(cachedStatusEffectDefault);
+                return;
+            }
 
             foreach (var statusEffect in monster.Stat.StatusEffects)
             {
@@ -421,13 +539,13 @@ namespace ScoreBoard.content
          */
         private void ShowHealth(bool isReported, Monster monster)
         {
-            lblHealth.Text = monster.Stat.Hp.ToString();
+            lblCurrentHealth.Text = monster.Stat.Hp.ToString();
             if (isReported)
             {
                 pnHealth.Visible = true;
                 if (monster.Stat.Shield > 0)
-                    lblHealth.Text += $"(+{monster.Stat.Shield})";
-                lblHealth.Text += $"/{monster.Stat.MaxHp}";
+                    lblCurrentHealth.Text += $"(+{monster.Stat.Shield})";
+                lblCurrentHealth.Text += $"/{monster.Stat.MaxHp}";
             }
         }
 
@@ -525,6 +643,210 @@ namespace ScoreBoard.content
                     lblRangedAttackCount.Text = $"{{{combatStat.AttackCount}}}";
                 }
             }
+        }
+
+        /*
+         * SimpleStatLabel_Click(object sender, EventArgs e)
+         * - 플레이어의 간단한 스탯 레이블 클릭 이벤트 핸들러
+         * - 레이블을 클릭하면 해당 스탯 값을 편집할 수 있는 모달을 표시
+         */
+        private void SimpleStatLabel_Click(object sender, EventArgs e)
+        {
+            if (sender is not TransparentTextLabel label || currentShowingPlayer == null)
+                return;
+            DetailEditModal modal = new(label.Text)
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = label.PointToScreen(Point.Empty),
+            };
+
+            if (modal.ShowDialog(this) == DialogResult.OK)
+            {
+                if (ushort.TryParse(modal.InputText, out ushort value) && value >= 0)
+                {
+                    var labelSetters = new Dictionary<string, Action>
+                    {
+                        ["lblMaxHealth"] = () =>
+                        {
+                            currentShowingPlayer.Stat.MaxHp = value;
+                            lblMaxHealth.Text = value.ToString();
+                            UpdateHealthBar(); // 체력 바 업데이트
+                        },
+                        ["lblMovement"] = () =>
+                        {
+                            currentShowingPlayer.Stat.Movement = value;
+                            lblMovement.Text = value.ToString();
+                        },
+                        ["lblMeleeRange"] = () =>
+                        {
+                            currentShowingPlayer.Stat.CombatStats["melee"].Range = value;
+                            lblMeleeRange.Text = value.ToString();
+                        },
+                        ["lblRangedRange"] = () =>
+                        {
+                            currentShowingPlayer.Stat.CombatStats["ranged"].Range = value;
+                            lblRangedRange.Text = value.ToString();
+                        },
+                        ["lblMeleeAttack"] = () =>
+                        {
+                            currentShowingPlayer.Stat.CombatStats["melee"].Value = value;
+                            lblMeleeAttack.Text = value.ToString();
+                        },
+                        ["lblRangedAttack"] = () =>
+                        {
+                            currentShowingPlayer.Stat.CombatStats["ranged"].Value = value;
+                            lblRangedAttack.Text = value.ToString();
+                        },
+                        ["lblMeleeAttackCount"] = () =>
+                        {
+                            currentShowingPlayer.Stat.CombatStats["melee"].AttackCount = value;
+                            lblMeleeAttackCount.Text = $"{{{value}}}";
+                        },
+                        ["lblRangedAttackCount"] = () =>
+                        {
+                            currentShowingPlayer.Stat.CombatStats["ranged"].AttackCount = value;
+                            lblRangedAttackCount.Text = $"{{{value}}}";
+                        },
+                        ["lblSpellPower"] = () =>
+                        {
+                            currentShowingPlayer.Stat.SpellPower = value;
+                            lblSpellPower.Text = value.ToString();
+                        },
+                        ["lblWisdom"] = () =>
+                        {
+                            currentShowingPlayer.Stat.Wisdom = value;
+                            lblWisdom.Text = value.ToString();
+                        },
+                    };
+
+                    if (labelSetters.TryGetValue(label.Name, out var setter))
+                    {
+                        setter();
+                    }
+                    else
+                    {
+                        MessageBox.Show("알 수 없는 항목입니다.", "오류", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                }
+                else
+                {
+                    MessageBox.Show("유효한 값을 입력하세요.", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        /*
+         * lblHealth_Click(object sender, EventArgs e)
+         * - 플레이어의 체력 레이블 클릭 이벤트 핸들러
+         * - 레이블을 클릭하면 체력을 편집할 수 있는 모달을 표시
+         */
+        private void lblCurrentHealth_Click(object sender, EventArgs e)
+        {
+            DetailEditModal modal = new(lblCurrentHealth.Text)
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = lblCurrentHealth.PointToScreen(Point.Empty)
+            };
+
+            if (modal.ShowDialog(this) == DialogResult.OK)
+            {
+                var (hp, shield) = ParseHealthString(modal.InputText);
+                if (hp == null)
+                {
+                    MessageBox.Show("유효한 체력 값을 입력하세요.", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+                currentShowingPlayer!.Stat.Hp = (ushort)hp;
+                currentShowingPlayer.Stat.Shield = shield ?? 0;
+                lblCurrentHealth.Text = $"{hp}{(shield.HasValue ? $"(+{shield})" : "")}";
+                UpdateHealthBar();
+            }
+        }
+
+        /*
+         * UpdateHealthBar()
+         * - 현재 디테일 뷰포트에 표시된 플레이어의 체력 바를 업데이트하는 메서드
+         */
+        private void UpdateHealthBar()
+        {
+            // 현재 디테일 뷰포트에 표시된 플레이어의 체력 바를 업데이트
+            // pn1P~4P까지 Name이 pn{currentShowingPlayer.Id}인 패널을 찾아서 HealthBar를 업데이트
+            // 현재 플레이어가 1P~4P 중 어느 것인지 확인
+            var healthBar = this.Controls.Find($"hb{currentShowingPlayer!.Id}", true).FirstOrDefault() as HealthBar;
+            playerList.SuspendLayout();
+            // HealthBar 컨트롤을 찾아서 업데이트
+            healthBar?.SetValues(currentShowingPlayer.Stat.Hp,
+                                currentShowingPlayer.Stat.Shield,
+                                currentShowingPlayer.Stat.MaxHp);
+            playerList.ResumeLayout();
+        }
+
+        /*
+         * ParseHealthString(string input)
+         * - 체력 문자열을 파싱하여 플레이어의 체력을 업데이트하는 메서드
+         * - input: 체력 문자열 (예: "100(+20)")
+         */
+        private static (ushort?, ushort?) ParseHealthString(string input)
+        {
+            ushort? hp;
+            ushort? shield = null;
+
+            // 정규 표현식을 사용하여 체력과 보호막을 추출
+            var match = System.Text.RegularExpressions.Regex.Match(input, @"^(\d+)(?:\s*\(\+(\d+)\))?$");
+
+            if (match.Success)
+            {
+                hp = ushort.Parse(match.Groups[1].Value);
+                if (match.Groups[2].Success)
+                {
+                    shield = ushort.Parse(match.Groups[2].Value);
+                }
+            }
+            else
+            {
+                return (null, null);
+            }
+            return (hp, shield);
+        }
+
+        private void fpnStatusEffect_Click(object sender, EventArgs e)
+        {
+            EditStatusEffect();
+        }
+
+        /*
+         * EditStatusEffect()
+         * - 현재 플레이어의 상태 이상을 편집하는 메서드
+         * - 상태 이상이 없거나 현재 플레이어가 선택되지 않은 경우 아무 작업도 하지 않음
+         * - 상태 이상 편집 모달을 표시하고, 사용자가 상태 이상을 수정하면 업데이트
+         */
+        private void EditStatusEffect()
+        {
+            if (currentShowingPlayer == null)
+                return;
+            Point modalStartPos = new(fpnStatusEffect.PointToScreen(Point.Empty).X, fpnStatusEffect.PointToScreen(Point.Empty).Y + 45);
+            var editModal = new StatusEffectEditModal()
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = modalStartPos,
+            };
+            if (editModal.ShowDialog(this) == DialogResult.OK)
+            {
+                // 상태 이상 업데이트
+                UpdatedStatusEffects(editModal.newStatusEffects);
+                ShowStatusEffect(currentShowingPlayer);
+            }
+        }
+
+        /*
+         * UpdatedStatusEffects(List<StatusEffect> effects)
+         * - 현재 플레이어의 상태 이상을 업데이트하는 메서드
+         * - effects: 새로 설정할 상태 이상 목록
+         */
+        private void UpdatedStatusEffects(List<StatusEffect> effects)
+        {
+            // TODO => 현재 플레이어의 상태 이상을 새로 설정
+            // TODO => 이미 있는 상태이상이라면 업데이트, 없는 상태이상이라면 추가
         }
     }
 }
